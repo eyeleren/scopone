@@ -12,6 +12,34 @@ if (!$server) {
 
 echo "🃏 SCOPONE SCIENTIFICO server running on port $port...\n";
 
+// 👇 Added emoji card helper (same style of client)
+function emojiCard(array $c): string {
+    $suitMap = [
+        'Spade'   => '⚔️',
+        'Denari'  => '💰',
+        'Coppe'   => '🍷',
+        'Bastoni' => '🪵',
+    ];
+    $rankEmoji = match($c['value'] ?? null) {
+        1 => 'A',
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '🧙',
+        9 => '🐴',
+        10 => '👑',
+        default => '?'
+    };
+    $suitEmoji = $suitMap[$c['suit'] ?? ''] ?? '?';
+    if (($c['suit'] ?? '') === 'Denari' && in_array($c['value'], [7,10], true)) {
+        return "⭐ {$rankEmoji}{$suitEmoji}";
+    }
+    return "{$rankEmoji}{$suitEmoji}";
+}
+
 $clients = [];
 $playerCount = 0;
 $game = new Game();
@@ -124,6 +152,14 @@ while (true) {
                             'card'   => $ev['card'] ?? null
                         ]);
                         foreach ($clients as $c) @fwrite($c, $out . "\n");
+
+                        // 👇 Server-side verbose log with emojis
+                        if ($ev['type'] === 'capture') {
+                            $cardsStr = implode(' ', array_map('emojiCard', $ev['cards']));
+                            echo "[CAPTURE] Player" . ($ev['player'] + 1) . " prende: $cardsStr\n";
+                        } else {
+                            echo "[PLAY] Player" . ($ev['player'] + 1) . " mette " . emojiCard($ev['card']) . "\n";
+                        }
                     } elseif (in_array($ev['type'], ['SETTEBELLO','REBELLO','SCOPA'], true)) {
                         $out = json_encode([
                             'action'=>'announce',
@@ -132,6 +168,15 @@ while (true) {
                             'player'=>$ev['player']
                         ]);
                         foreach ($clients as $c) @fwrite($c, $out."\n");
+
+                        // 👇 Server announce log
+                        $label = match($ev['type']) {
+                            'SETTEBELLO' => '⚜️ SETTEBELLO',
+                            'REBELLO'    => '👑 RE BELLO',
+                            'SCOPA'      => '🧹 SCOPA',
+                            default      => $ev['type']
+                        };
+                        echo "[ANNOUNCE] $label Player" . ($ev['player'] + 1) . "\n";
                     }
                 }
             }

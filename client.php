@@ -66,7 +66,7 @@ function emojiCard(array $c): string {
             return "⭐ {$rankEmoji}{$suitEmoji}";
         }
         if (($c['value'] ?? 0) === 10) {
-            return "👑 {$rankEmoji}{$suitEmoji}";
+            return "⭐ {$rankEmoji}{$suitEmoji}";
         }
     }
     return "{$rankEmoji}{$suitEmoji}";
