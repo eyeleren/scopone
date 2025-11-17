@@ -10,7 +10,7 @@ if (!$server) {
     die("Server error: $errstr ($errno)\n");
 }
 
-echo "🂡 SCOPONE SCIENTIFICO server running on port $port...\n";
+echo "🃏 SCOPONE SCIENTIFICO server running on port $port...\n";
 
 $clients = [];
 $playerCount = 0;
@@ -27,7 +27,7 @@ while (true) {
     if (in_array($server, $read)) {
         $conn = stream_socket_accept($server);
         if (!$conn) continue;
-        stream_set_blocking($conn, true);
+        stream_set_blocking($conn, false); // was true: make non-blocking
         stream_set_write_buffer($conn, 0); // flush immediately
         $meta = stream_socket_get_name($conn, true);
         $clients[] = $conn;
@@ -77,34 +77,62 @@ while (true) {
         }
     }
 
-    // Read player input
-    foreach ($clients as $client) {
+    // Read player input (only from ready sockets, non-blocking)
+    foreach ($read as $client) {
+        if ($client === $server) continue;
         $data = fgets($client);
-        if ($data === false) continue;
+        if ($data === false) {
+            if (feof($client)) {
+                // remove disconnected client
+                $idx = array_search($client, $clients, true);
+                if ($idx !== false) {
+                    fclose($client);
+                    array_splice($clients, $idx, 1);
+                }
+            }
+            continue;
+        }
         $msg = json_decode(trim($data), true);
         if (!$msg) continue;
 
         if ($msg['action'] === 'play') {
             $result = $game->handlePlay($msg['payload']['playerId'], $msg['payload']['cardIndex']);
 
-            foreach ($result['events'] as $ev) {
-                if ($ev['type'] === 'capture' || $ev['type'] === 'place') {
-                    $out = json_encode([
-                        'action' => 'event',
-                        'type'   => $ev['type'],
-                        'player' => $ev['player'],
-                        'cards'  => $ev['cards'] ?? null,
-                        'card'   => $ev['card'] ?? null
-                    ]);
-                    foreach ($clients as $c) @fwrite($c, $out . "\n");
-                } elseif ($ev['type'] === 'SETTEBELLO' || $ev['type'] === 'REBELLO') {
-                    $out = json_encode([
-                        'action'=>'announce',
-                        'type'=>$ev['type'],
-                        'who'=>"Player".($ev['player']+1),
-                        'player'=>$ev['player']
-                    ]);
-                    foreach ($clients as $c) @fwrite($c, $out."\n");
+            if (empty($result['ok'])) {
+                @fwrite($client, json_encode([
+                    'action'=>'error',
+                    'playerId'=>$msg['payload']['playerId'],
+                    'msg'=>$result['error']
+                ])."\n");
+                if (str_contains($result['error'], 'asso')) {
+                    echo "[RULE] Player{$msg['payload']['playerId']} blocked first-turn Asso\n";
+                } else {
+                    echo "[ERROR] ".$result['error']."\n";
+                }
+                $game->broadcastState($clients);
+                continue;
+            }
+
+            if (!empty($result['events'])) {
+                foreach ($result['events'] as $ev) {
+                    if ($ev['type'] === 'capture' || $ev['type'] === 'place') {
+                        $out = json_encode([
+                            'action' => 'event',
+                            'type'   => $ev['type'],
+                            'player' => $ev['player'],
+                            'cards'  => $ev['cards'] ?? null,
+                            'card'   => $ev['card'] ?? null
+                        ]);
+                        foreach ($clients as $c) @fwrite($c, $out . "\n");
+                    } elseif (in_array($ev['type'], ['SETTEBELLO','REBELLO','SCOPA'], true)) {
+                        $out = json_encode([
+                            'action'=>'announce',
+                            'type'=>$ev['type'],
+                            'who'=>"Player".($ev['player']+1),
+                            'player'=>$ev['player']
+                        ]);
+                        foreach ($clients as $c) @fwrite($c, $out."\n");
+                    }
                 }
             }
 

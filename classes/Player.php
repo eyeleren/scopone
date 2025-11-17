@@ -8,6 +8,7 @@ class Player {
     public array $hand = [];
     /** @var Card[] captured cards (flattened) */
     public array $captures = [];
+    public int $scopa = 0; // numero di scope
 
     public function __construct(string $name) {
         $this->name = $name;
@@ -27,4 +28,5 @@ class Player {
     public function addCaptured(array $cards) {
         foreach ($cards as $c) $this->captures[] = $c;
     }
+    public function addScopa(): void { $this->scopa++; }
 }

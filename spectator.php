@@ -75,6 +75,11 @@ while (!feof($socket)) {
                     echo "\033[1;41m" . str_pad("  👑  RE BELLO!  👑  {$msg['who']}  ", 60, " ", STR_PAD_BOTH) . "\033[0m\n";
                     usleep(160000); echo "\n"; usleep(120000);
                 }
+            } elseif ($msg['type'] === 'SCOPA') {
+                for ($i=0;$i<2;$i++) {
+                    echo "\033[1;43m" . str_pad("  🧹  SCOPA!  {$msg['who']}  ", 60, " ", STR_PAD_BOTH) . "\033[0m\n";
+                    usleep(160000); echo "\n"; usleep(120000);
+                }
             }
             break;
 

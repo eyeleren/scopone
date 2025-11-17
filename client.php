@@ -16,6 +16,7 @@ if (!is_array($welcome) || !isset($welcome['payload'])) die("Invalid welcome mes
 
 $playerId = $welcome['payload']['id'];
 $role = $welcome['payload']['role'];
+$lastPromptToken = null; // evita prompt duplicati
 
 echo "Connected as $name ($role)\n\n";
 
@@ -33,32 +34,63 @@ function showStatusAnimation(string $mode, int $have=0, int $need=0) {
     }
 }
 
-// Map card to emoji string
 function emojiCard(array $c): string {
     if (isset($c['hidden'])) return '🂠';
     $suitMap = [
-        'spade'   => '⚔️',
-        'denari'  => '💰',
-        'coppe'   => '🍷',
-        'bastoni' => '🪵',
-        'hearts'  => '❤️',
-        'diamonds'=> '💎',
-        'clubs'   => '♣️'
+        'Spade'   => '⚔️',
+        'Denari'  => '💰',
+        'Coppe'   => '🍷',
+        'Bastoni' => '🪵',
     ];
-    $numMap = [
-        'A'=>'🅰️','1'=>'1️⃣','2'=>'2️⃣','3'=>'3️⃣','4'=>'4️⃣','5'=>'5️⃣',
-        '6'=>'6️⃣','7'=>'7️⃣','8'=>'8️⃣','9'=>'9️⃣','10'=>'🔟',
-        'J'=>'🧑','Q'=>'👸','K'=>'🤴'
-    ];
-    $label = $c['label'] ?? '?';
-    $suit  = $c['suit'] ?? '?';
-    $rankEmoji = $numMap[$label] ?? $label;
-    $suitEmoji = $suitMap[$suit] ?? $suit;
-    // Highlight settebello (7 denari)
-    if ($label === '7' && $suit === 'denari') {
-        return "⭐ $rankEmoji$suitEmoji";
+    $rankEmoji = match($c['value'] ?? null) {
+        1 => 'A',      // Asso
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '🧙',     // Signore
+        9 => '🐴',     // Cavallo
+        10 => '👑',    // Re
+        default => '?'
+    };
+    $suitEmoji = $suitMap[$c['suit'] ?? ''] ?? '?';
+
+    // Highlight settebello (7 Denari) and Re bello (10 Denari)
+    if (($c['suit'] ?? '') === 'Denari') {
+        if (($c['value'] ?? 0) === 7) {
+            return "⭐ {$rankEmoji}{$suitEmoji}";
+        }
+        if (($c['value'] ?? 0) === 10) {
+            return "👑 {$rankEmoji}{$suitEmoji}";
+        }
     }
-    return "$rankEmoji$suitEmoji";
+    return "{$rankEmoji}{$suitEmoji}";
+}
+
+// Add robust prompt for card index (loop until valid)
+function promptCardIndex(int $max): int {
+    while (true) {
+        echo "Indice carta (0-$max): ";
+        $raw = fgets(STDIN);
+        if ($raw === false) continue;
+        $raw = trim($raw);
+        if ($raw === '') {
+            echo "Input vuoto. ";
+            continue;
+        }
+        if (!ctype_digit($raw)) {
+            echo "Deve essere un numero. ";
+            continue;
+        }
+        $val = (int)$raw;
+        if ($val < 0 || $val > $max) {
+            echo "Fuori range. ";
+            continue;
+        }
+        return $val;
+    }
 }
 
 stream_set_blocking($conn, false);
@@ -106,15 +138,23 @@ while (true) {
 
                 echo "\nTavolo: " . (empty($payload['table']) ? '(vuoto)' :
                     implode(' ', array_map('emojiCard', $payload['table']))) . "\n";
-                echo "Punteggio: Coppia A {$payload['teamScores']['A']} | Coppia B {$payload['teamScores']['B']}\n\n";
+                // echo "Punteggio: Coppia A {$payload['teamScores']['A']} | Coppia B {$payload['teamScores']['B']}\n\n";
 
-                if ($payload['turn'] == $playerId - 1 && $role === 'player') {
-                    echo "È il tuo turno! Inserisci indice carta (0-" . (count($payload['players'][$playerId - 1]['hand']) - 1) . "): ";
-                    $input = trim(fgets(STDIN));
-                    fwrite($conn, json_encode(['action' => 'play', 'payload' => [
-                        'playerId' => $playerId,
-                        'cardIndex' => (int)$input
-                    ]]) . "\n");
+                // Prompt solo se è davvero il tuo turno e non abbiamo già chiesto
+                if ($role === 'player' && $payload['turn'] == $playerId - 1) {
+                    $max = count($payload['players'][$playerId - 1]['hand']) - 1;
+                    $token = $payload['round'].'-'.$payload['turn'].'-'.$max;
+                    if ($max >= 0 && $lastPromptToken !== $token) {
+                        $lastPromptToken = $token;
+                        $cardIndex = promptCardIndex($max);
+                        fwrite($conn, json_encode([
+                            'action' => 'play',
+                            'payload' => [
+                                'playerId' => $playerId,
+                                'cardIndex' => $cardIndex
+                            ]
+                        ]) . "\n");
+                    }
                 }
                 break;
 
@@ -133,6 +173,8 @@ while (true) {
                     echo "\n⚜️  SETTEBELLO a Player".($msg['player']+1)."! ⚜️\n";
                 } elseif ($msg['type'] === 'REBELLO') {
                     echo "\n👑  RE BELLO a Player".($msg['player']+1)."! 👑\n";
+                } elseif ($msg['type'] === 'SCOPA') {
+                    echo "\n🧹  SCOPA di Player".($msg['player']+1)."! 🧹\n";
                 }
                 break;
 
@@ -149,6 +191,24 @@ while (true) {
             case 'game_over':
                 echo "\n*** " . ($msg['msg'] ?? 'FINE') . " ***\n";
                 exit(0);
+            case 'error':
+                echo "\n[ERRORE] {$msg['msg']}\n";
+                // Ripropone SOLO al giocatore che ha generato l'errore
+                if (($msg['playerId'] ?? null) === $playerId && isset($payload) && $payload['turn'] == $playerId - 1) {
+                    $max = count($payload['players'][$playerId - 1]['hand']) - 1;
+                    if ($max >= 0) {
+                        // Non aggiorniamo $lastPromptToken così la logica di re-prompt interno continua
+                        $cardIndex = promptCardIndex($max);
+                        fwrite($conn, json_encode([
+                            'action'=>'play',
+                            'payload'=>[
+                                'playerId'=>$playerId,
+                                'cardIndex'=>$cardIndex
+                            ]
+                        ])."\n");
+                    }
+                }
+                break;
         }
     } else {
         if (!isset($payload) && $role === 'player') {

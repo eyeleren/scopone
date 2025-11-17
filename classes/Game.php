@@ -8,14 +8,14 @@ require_once __DIR__ . '/Player.php';
  */
 class Game {
     /** @var Player[] */
-    public array $players = [];       // Giocatori (max 4)
+    public array $players = [];
     /** @var Card[] */
-    public array $table = [];         // Carte sul tavolo
-    public int $turn = 0;             // Indice (0..3) del giocatore di turno
+    public array $table = [];
+    public int $turn = 0;
     public array $teamScores = ['A'=>0,'B'=>0];
     public int $round = 1;
-    /** @var array<int,string> Ruolo per id di connessione (player|spectator) */
-    public array $roles = [];         // Mappa id => ruolo
+    public array $roles = [];
+    public int $movesInRound = 0; // <--- aggiunto
 
     /** Costruttore opzionale (compat per vecchia versione). */
     public function __construct(array $names = []) {
@@ -38,7 +38,7 @@ class Game {
     public function isReady(): bool { return count($this->players) === 4; }
 
     public function startRound(): void {
-        if (!$this->isReady()) return; // aspetta 4 giocatori
+        if (!$this->isReady()) return;
         $deck = new Deck();
         foreach ($this->players as $p) {
             $p->setHand($deck->deal(10));
@@ -46,6 +46,7 @@ class Game {
         }
         $this->table = [];
         $this->turn = 0;
+        $this->movesInRound = 0; // reset contatore mosse
     }
 
     // build state payload to send to client/spectator
@@ -78,11 +79,33 @@ class Game {
         $card = $player->playCard($cardIndex);
         if ($card === null) return ['ok'=>false,'error'=>'Carta non valida.'];
 
+        // REGOLA: Asso non può essere la primissima carta del gioco
+        if ($card->value === 1 && $this->round === 1 && $this->movesInRound === 0) {
+            // rimetti la carta nella mano (annulla giocata)
+            $player->hand = array_merge(
+                array_slice($player->hand, 0, $cardIndex),
+                [$card],
+                array_slice($player->hand, $cardIndex)
+            );
+            return ['ok'=>false,'error'=>'Non puoi giocare un asso come prima carta della partita, piuttosto parti mulo.'];
+        }
+
+        // Caso speciale: Asso su tavolo vuoto -> prende solo se stesso
+        if ($card->value === 1 && empty($this->table)) {
+            $player->addCaptured([$card]);
+            $events = [
+                ['type'=>'capture','player'=>$i,'cards'=>[$card->toArray()]]
+            ];
+            $this->advanceTurn();
+            $this->movesInRound++;
+            return ['ok'=>true,'events'=>$events,'roundEnd'=>$this->isRoundEnd()];
+        }
+
         $taken = $this->resolveTake($card);
         $events = [];
 
         if (!empty($taken)) {
-            // remove taken from table
+            $hadCardsBefore = count($this->table); // per SCOPA
             foreach ($taken as $t) {
                 foreach ($this->table as $k => $tabc) {
                     if ($tabc === $t) { array_splice($this->table, $k, 1); break; }
@@ -91,20 +114,23 @@ class Game {
             $captured = array_merge([$card], $taken);
             $player->addCaptured($captured);
             $events[] = ['type'=>'capture','player'=>$i,'cards'=>array_map(fn($c)=>$c->toArray(), $captured)];
-
-            // special checks
+            // annunci speciali
             foreach ($captured as $c) {
                 if ($c->suit === 'Denari' && $c->value === 7) $events[] = ['type'=>'SETTEBELLO','player'=>$i];
                 if ($c->suit === 'Denari' && $c->value === 10) $events[] = ['type'=>'REBELLO','player'=>$i];
             }
+            // SCOPA: tavolo svuotato e c'erano carte prima
+            if (count($this->table) === 0 && $hadCardsBefore > 0) {
+                $player->addScopa();
+                $events[] = ['type'=>'SCOPA','player'=>$i];
+            }
         } else {
-            // place on table
             $this->table[] = $card;
             $events[] = ['type'=>'place','player'=>$i,'card'=>$card->toArray()];
         }
 
-        // advance turn
         $this->advanceTurn();
+        $this->movesInRound++;
         $roundEnd = $this->isRoundEnd();
         return ['ok'=>true,'events'=>$events,'roundEnd'=>$roundEnd];
     }
@@ -124,6 +150,11 @@ class Game {
     }
 
     protected function resolveTake(Card $card): array {
+        // REGOLA: Asso (value=1) prende tutte le carte sul tavolo
+        if ($card->value === 1 && !empty($this->table)) {
+            return $this->table;
+        }
+
         // priority: exact equal value on table -> single take
         foreach ($this->table as $t) {
             if ($t->value === $card->value) return [$t];
