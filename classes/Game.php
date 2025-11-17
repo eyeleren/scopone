@@ -16,6 +16,7 @@ class Game {
     public int $round = 1;
     public array $roles = [];
     public int $movesInRound = 0; // <--- aggiunto
+    public bool $started = false; // nuovo flag
 
     /** Costruttore opzionale (compat per vecchia versione). */
     public function __construct(array $names = []) {
@@ -46,7 +47,8 @@ class Game {
         }
         $this->table = [];
         $this->turn = 0;
-        $this->movesInRound = 0; // reset contatore mosse
+        $this->movesInRound = 0;
+        $this->started = true; // segna avvio
     }
 
     // build state payload to send to client/spectator
@@ -60,9 +62,13 @@ class Game {
             'players' => []
         ];
         foreach ($this->players as $i => $p) {
-            $entry = ['name'=>$p->name,'capturesCount'=>count($p->captures)];
+            $team = ($i === 0 || $i === 2) ? 'A' : 'B';
+            $entry = [
+                'name'=>$p->name,
+                'capturesCount'=>count($p->captures),
+                'team'=>$team
+            ];
             if ($forIndex === null || $debug || $forIndex === $i) {
-                // include full hand for spectators, debug or the owning player
                 $entry['hand'] = array_map(fn($c)=>$c->toArray(), $p->hand);
             } else {
                 $entry['hand'] = array_fill(0, count($p->hand), ['hidden'=>true]);
@@ -288,5 +294,27 @@ class Game {
         if ($this->teamScores['A'] >= 21 && $this->teamScores['A'] > $this->teamScores['B']) return 'A';
         if ($this->teamScores['B'] >= 21 && $this->teamScores['B'] > $this->teamScores['A']) return 'B';
         return null;
+    }
+
+    public function isNameTaken(string $name): bool {
+        foreach ($this->players as $p) {
+            if (strcasecmp($p->name, $name) === 0) return true;
+        }
+        return false;
+    }
+
+    public function setPlayerName(int $index, string $name): bool {
+        if (!isset($this->players[$index])) return false;
+        if ($this->isNameTaken($name)) return false;
+        $this->players[$index]->name = $name;
+        return true;
+    }
+
+    public function allNamesConfirmed(): bool {
+        if (!$this->isReady()) return false;
+        foreach ($this->players as $p) {
+            if (preg_match('/^Player\d+$/', $p->name)) return false;
+        }
+        return true;
     }
 }

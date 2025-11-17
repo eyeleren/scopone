@@ -55,12 +55,16 @@ while (!feof($socket)) {
 
         case 'event':
             if ($msg['type'] === 'capture') {
-                echo "\nEvento: {$msg['who']} ha catturato: ";
+                $pindex = $msg['player'];
+                $pname = $s['players'][$pindex]['name'] ?? ("Player".($pindex+1));
+                echo "\nEvento: {$pname} ha catturato: ";
                 foreach ($msg['cards'] as $c) echo "[{$c['label']} {$c['suit']}] ";
                 echo "\n";
             } elseif ($msg['type'] === 'place') {
                 $c = $msg['card'];
-                echo "\nEvento: {$msg['who']} ha messo {$c['label']} {$c['suit']}\n";
+                $pindex = $msg['player'];
+                $pname = $s['players'][$pindex]['name'] ?? ("Player".($pindex+1));
+                echo "\nEvento: {$pname} ha messo {$c['label']} {$c['suit']}\n";
             }
             break;
 
