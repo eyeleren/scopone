@@ -36,7 +36,7 @@ while (!feof($socket)) {
             $s = $msg['payload'];
             echo "\033[2J\033[;H";
             echo "\033[1;36mSCOPONE SCIENTIFICO — ROUND {$s['round']} (SPECTATOR)\033[0m\n";
-            echo "Turn index: {$s['turn']}\n";
+            echo "Turno giocatore ".($s['turn']+1)." 🕒\n";
             echo "Tavolo: ";
             if (empty($s['table'])) echo "(vuoto)\n"; else {
                 foreach ($s['table'] as $c) echo "[{$c['label']} {$c['suit']}]  ";

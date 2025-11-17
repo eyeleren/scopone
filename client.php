@@ -23,15 +23,18 @@ echo "Connected as $name ($role)\n\n";
 function showStatusAnimation(string $mode, int $have=0, int $need=0) {
     static $i = 0;
     $frames = ["⏳","⌛","🕐","🕑","🕒","🕓","🕔","🕕","🕖","🕗","🕘","🕙","🕚"];
-    $bar    = ["▮▯▯▯▯","▮▮▯▯▯","▮▮▮▯▯","▮▮▮▮▯","▮▮▮▮▮"];
     $f = $frames[$i % count($frames)];
-    $b = $bar[$i % count($bar)];
     $i++;
-    if ($mode === 'lobby') {
-        echo "\rIn attesa giocatori $f ($have/$need) ";
-    } elseif ($mode === 'turn') {
-        echo "\rAttendi il tuo turno... $b";
-    }
+    echo "\rIn attesa giocatori $f ($have/$need) ";
+}
+
+// Animazione per il turno di un altro giocatore
+function showTurnAnimation(int $turnIndex) {
+    static $i = 0;
+    $frames = ["🕐","🕑","🕒","🕓","🕔","🕕","🕖","🕗","🕘","🕙","🕚","🕛"];
+    $f = $frames[$i % count($frames)];
+    $i++;
+    echo "\rTurno giocatore ".($turnIndex+1)." $f ";
 }
 
 function emojiCard(array $c): string {
@@ -138,7 +141,10 @@ while (true) {
 
                 echo "\nTavolo: " . (empty($payload['table']) ? '(vuoto)' :
                     implode(' ', array_map('emojiCard', $payload['table']))) . "\n";
-                // echo "Punteggio: Coppia A {$payload['teamScores']['A']} | Coppia B {$payload['teamScores']['B']}\n\n";
+                // RIMOSSO: echo duplicato del turno
+                // if ($role === 'player' && $payload['turn'] !== $playerId - 1) {
+                //     echo "\nTurno giocatore ".($payload['turn']+1)." 🕒\n";
+                // }
 
                 // Prompt solo se è davvero il tuo turno e non abbiamo già chiesto
                 if ($role === 'player' && $payload['turn'] == $playerId - 1) {
@@ -214,7 +220,8 @@ while (true) {
         if (!isset($payload) && $role === 'player') {
             showStatusAnimation('lobby', $lobbyPlayers, $lobbyNeeded);
         } elseif (isset($payload) && $role === 'player' && $payload['turn'] !== $playerId - 1) {
-            showStatusAnimation('turn');
+            // Animazione solo “Turno giocatore X”
+            showTurnAnimation($payload['turn']);
         }
         usleep(200000);
     }
