@@ -183,10 +183,6 @@ while (true) {
 
                 echo "\nTavolo: " . (empty($payload['table']) ? '(vuoto)' :
                     implode(' ', array_map('emojiCard', $payload['table']))) . "\n";
-                // RIMOSSO: echo duplicato del turno
-                // if ($role === 'player' && $payload['turn'] !== $playerId - 1) {
-                //     echo "\nTurno giocatore ".($payload['turn']+1)." 🕒\n";
-                // }
 
                 // Prompt solo se è davvero il tuo turno e non abbiamo già chiesto
                 if ($role === 'player' && $payload['turn'] == $playerId - 1) {
@@ -281,7 +277,9 @@ while (true) {
                 echo "\n[ERRORE] {$msg['msg']}\n";
                 if (str_contains($msg['msg'], 'Nome già in uso')) {
                     echo "Nuovo nome: ";
+                    stream_set_blocking(STDIN, true);
                     $new = trim(fgets(STDIN));
+                    stream_set_blocking(STDIN, false);
                     if ($new !== '') {
                         fwrite($conn, json_encode([
                             'action'=>'join',
@@ -290,11 +288,10 @@ while (true) {
                         ])."\n");
                     }
                 }
-                // Ripropone SOLO al giocatore che ha generato l'errore
+                // se errore turno, ripropone scelta carta
                 if (($msg['playerId'] ?? null) === $playerId && isset($payload) && $payload['turn'] == $playerId - 1) {
                     $max = count($payload['players'][$playerId - 1]['hand']) - 1;
                     if ($max >= 0) {
-                        // Non aggiorniamo $lastPromptToken così la logica di re-prompt interno continua
                         $cardIndex = promptCardIndex($max);
                         fwrite($conn, json_encode([
                             'action'=>'play',
@@ -302,7 +299,7 @@ while (true) {
                                 'playerId'=>$playerId,
                                 'cardIndex'=>$cardIndex
                             ]
-                        ])."\n");
+                        ]) . "\n");
                     }
                 }
                 break;

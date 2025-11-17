@@ -45,6 +45,7 @@ $playerCount = 0;
 $game = new Game();
 $lastLobbyBroadcast = time();
 $clientMeta = []; // mappa socket->endpoint
+$socketPlayerIndex = []; // mappa (int)socket -> indice player (0..3)
 
 // Handshake nuovo round
 $pendingNextRound = false;
@@ -71,6 +72,10 @@ while (true) {
         $role = $playerCount <= 4 ? 'player' : 'spectator';
         $id = $playerCount;
         $game->registerPlayer($id, "Player$id", $role);
+        if ($role === 'player') {
+            // indice reale del player appena aggiunto
+            $socketPlayerIndex[(int)$conn] = count($game->players) - 1;
+        }
 
         fwrite($conn, json_encode([
             'action' => 'welcome',
@@ -238,31 +243,35 @@ while (true) {
         } elseif ($msg['action'] === 'join') {
             $nick = trim($msg['nick'] ?? '');
             $mode = $msg['mode'] ?? 'player';
-            // $idx = $game->isReady() ? null : ($msg['id'] ?? null); // optional
-            // Trova indice player legato a questo socket
-            $playerIdx = null;
-            foreach ($game->players as $pi => $pl) {
-                // match by provisional auto-name "PlayerX" (1-based id)
-                if ($pl->name === "Player".($pi+1)) {
-                    // assume order mapping
+
+            if ($mode === 'player') {
+                $playerIdx = $socketPlayerIndex[(int)$client] ?? null;
+                if ($playerIdx === null) {
+                    @fwrite($client, json_encode([
+                        'action'=>'error',
+                        'playerId'=>$msg['id'] ?? null,
+                        'msg'=>'Sessione non valida'
+                    ]) . "\n");
+                    continue;
                 }
-            }
-            // Usa l'ordine di connessione: playerIdx = count(players)-1
-            $playerIdx = count($game->players) - 1;
-            if ($mode === 'player' && $playerIdx !== null) {
                 if ($nick === '' || mb_strlen($nick) > 20) {
-                    @fwrite($client, json_encode(['action'=>'error','msg'=>'Nome non valido']) . "\n");
+                    @fwrite($client, json_encode([
+                        'action'=>'error',
+                        'playerId'=>$playerIdx + 1,
+                        'msg'=>'Nome non valido'
+                    ]) . "\n");
                 } elseif (!$game->setPlayerName($playerIdx, $nick)) {
-                    @fwrite($client, json_encode(['action'=>'error','msg'=>'Nome già in uso']) . "\n");
+                    @fwrite($client, json_encode([
+                        'action'=>'error',
+                        'playerId'=>$playerIdx + 1,
+                        'msg'=>'Nome già in uso'
+                    ]) . "\n");
                 } else {
                     @fwrite($client, json_encode([
                         'action'=>'name_ack',
-                        'msg'=>'OK',
                         'name'=>$nick
                     ]) . "\n");
-
                     $metaStr = $clientMeta[(int)$client] ?? 'unknown';
-                    // Log del nome reale (solo la prima volta o rename)
                     echo "New player connected ($metaStr) as {$nick}\n";
 
                     $lobbyMsg = json_encode([

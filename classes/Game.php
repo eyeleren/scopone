@@ -305,7 +305,9 @@ class Game {
 
     public function setPlayerName(int $index, string $name): bool {
         if (!isset($this->players[$index])) return false;
-        if ($this->isNameTaken($name)) return false;
+        foreach ($this->players as $i => $p) {
+            if ($i !== $index && strcasecmp($p->name, $name) === 0) return false;
+        }
         $this->players[$index]->name = $name;
         return true;
     }
