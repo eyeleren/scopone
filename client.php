@@ -18,6 +18,11 @@ $playerId = $welcome['payload']['id'];
 $role = $welcome['payload']['role'];
 $lastPromptToken = null; // evita prompt duplicati
 
+// 👇 NEW: last move (persisted across screen clears)
+$lastMoveText = '(nessuna)';
+// NEW: track last move player to attach announce bonuses to the right move
+$lastMovePlayerIndex = null;
+
 echo "Connected as $name ($role)\n\n";
 
 // Invia richiesta join con nome scelto
@@ -144,11 +149,6 @@ while (true) {
             case 'state':
                 system('clear');
                 $payload = $msg['payload'];
-                if ($waitingNext && $nextRound !== null && $payload['round'] === $nextRound) {
-                    $waitingNext = false;
-                    $nextRound = null;
-                    $roundReadyCount = 0;
-                }
 
                 $turnName = $payload['players'][$payload['turn']]['name'] ?? ('Player'.($payload['turn']+1));
                 $myIndex = $playerId - 1;
@@ -184,9 +184,11 @@ while (true) {
                 echo "\nTavolo: " . (empty($payload['table']) ? '(vuoto)' :
                     implode(' ', array_map('emojiCard', $payload['table']))) . "\n";
 
+                // Ultima mossa MUST be after Tavolo
+                echo "Ultima mossa: {$lastMoveText}\n\n";
+
                 // Prompt solo se è davvero il tuo turno e non abbiamo già chiesto
                 if ($role === 'player' && $payload['turn'] == $playerId - 1) {
-                    // Prima di mostrare il prompt scarta qualsiasi input digitato prima del turno
                     flushStdin();
                     $max = count($payload['players'][$playerId - 1]['hand']) - 1;
                     $token = $payload['round'].'-'.$payload['turn'].'-'.$max;
@@ -206,21 +208,53 @@ while (true) {
 
             case 'event':
                 if ($msg['type'] === 'capture') {
-                    $cards = implode(' ', array_map('emojiCard', $msg['cards']));
                     $pindex = $msg['player'];
                     $pname = ($payload['players'][$pindex]['name'] ?? ("Player".($pindex+1)));
-                    echo "\n[CATTURA] {$pname} prende: $cards\n";
+
+                    $taken = $msg['taken'] ?? null;
+                    if (!is_array($taken)) {
+                        // fallback (older servers): try to infer taken from "cards"
+                        $taken = $msg['cards'] ?? [];
+                    }
+                    $takenStr = implode(' ', array_map('emojiCard', $taken));
+
+                    $played = $msg['card'] ?? null;
+                    $playedStr = is_array($played) ? emojiCard($played) : '??';
+
+                    $lastMovePlayerIndex = $pindex;
+                    $lastMoveText = "[CAPTURE] {$pname} prende {$takenStr} con {$playedStr}";
+
+                    echo "\n{$lastMoveText}\n";
+
                 } elseif ($msg['type'] === 'place') {
-                    $c = $msg['card'];
                     $pindex = $msg['player'];
                     $pname = ($payload['players'][$pindex]['name'] ?? ("Player".($pindex+1)));
-                    echo "\n[GIOCA] {$pname} mette ".emojiCard($c)."\n";
+                    $c = $msg['card'];
+
+                    $lastMovePlayerIndex = $pindex;
+                    $lastMoveText = "[PLAY] {$pname} mette " . emojiCard($c);
+
+                    echo "\n{$lastMoveText}\n";
                 }
                 break;
 
             case 'announce':
                 $pindex = $msg['player'];
                 $pname = ($payload['players'][$pindex]['name'] ?? ("Player".($pindex+1)));
+
+                $label = match($msg['type']) {
+                    'SETTEBELLO' => '⚜️ SETTEBELLO',
+                    'REBELLO'    => '👑 RE BELLO',
+                    'SCOPA'      => '🧹 SCOPA',
+                    default      => $msg['type']
+                };
+
+                // NEW: append bonus to last move line (so client "mentions" it)
+                if ($lastMovePlayerIndex === $pindex) {
+                    $lastMoveText .= " | {$label}";
+                }
+
+                // keep the existing visible announce too
                 if ($msg['type'] === 'SETTEBELLO') {
                     echo "\n⚜️  SETTEBELLO a {$pname}! ⚜️\n";
                 } elseif ($msg['type'] === 'REBELLO') {
@@ -229,99 +263,6 @@ while (true) {
                     echo "\n🧹  SCOPA di {$pname}! 🧹\n";
                 }
                 break;
-
-            case 'round_summary':
-                echo "\n──────── ROUND {$msg['round']} ────────\n";
-                echo "Coppia A: +{$msg['coppiaA']['points']} (Tot {$msg['coppiaA']['total']}) [".implode(' + ',$msg['coppiaA']['players'])."]\n";
-                echo "Coppia B: +{$msg['coppiaB']['points']} (Tot {$msg['coppiaB']['total']}) [".implode(' + ',$msg['coppiaB']['players'])."]\n";
-                echo "Dettagli:\n";
-                foreach ($msg['notes'] as $n) echo " - $n\n";
-                $nextRound = $msg['round'] + 1;
-                echo "\nPremi un tasto per cominciare il {$nextRound}° round...";
-                // Blocco per conferma giocatore (solo player)
-                if ($role === 'player') {
-                    stream_set_blocking(STDIN, true);
-                    fgets(STDIN);
-                    stream_set_blocking(STDIN, false);
-                    fwrite($conn, json_encode([
-                        'action'=>'round_ready',
-                        'playerId'=>$playerId,
-                        'round'=>$nextRound
-                    ])."\n");
-                    $waitingNext = true;
-                    $roundReadyCount = 1; // noi siamo pronti
-                } else {
-                    // spettatore: non partecipa al handshake
-                }
-                break;
-
-            case 'round_prepare':
-                // Server segnala inizio handshake (può arrivare prima del nostro ready se siamo lenti)
-                $nextRound = $msg['nextRound'] ?? null;
-                if ($role === 'player') {
-                    $waitingNext = true;
-                    // Se non abbiamo ancora inviato ready (es. arrivato prima del summary) lo faremo al summary
-                }
-                break;
-
-            case 'round_progress':
-                if ($waitingNext && isset($msg['nextRound']) && $msg['nextRound'] === $nextRound) {
-                    $roundReadyCount = $msg['ready'];
-                }
-                break;
-
-            case 'game_over':
-                echo "\n*** " . ($msg['msg'] ?? 'FINE') . " ***\n";
-                exit(0);
-            case 'error':
-                echo "\n[ERRORE] {$msg['msg']}\n";
-                if (str_contains($msg['msg'], 'Nome già in uso')) {
-                    echo "Nuovo nome: ";
-                    stream_set_blocking(STDIN, true);
-                    $new = trim(fgets(STDIN));
-                    stream_set_blocking(STDIN, false);
-                    if ($new !== '') {
-                        fwrite($conn, json_encode([
-                            'action'=>'join',
-                            'nick'=>$new,
-                            'mode'=>'player'
-                        ])."\n");
-                    }
-                }
-                // se errore turno, ripropone scelta carta
-                if (($msg['playerId'] ?? null) === $playerId && isset($payload) && $payload['turn'] == $playerId - 1) {
-                    $max = count($payload['players'][$playerId - 1]['hand']) - 1;
-                    if ($max >= 0) {
-                        $cardIndex = promptCardIndex($max);
-                        fwrite($conn, json_encode([
-                            'action'=>'play',
-                            'payload'=>[
-                                'playerId'=>$playerId,
-                                'cardIndex'=>$cardIndex
-                            ]
-                        ]) . "\n");
-                    }
-                }
-                break;
         }
-    } else {
-        if ($waitingNext && $role === 'player') {
-            // Animazione attesa prossimo round
-            static $w = 0;
-            $frames = ["⏳","⌛","🕐","🕑","🕒","🕓","🕔","🕕","🕖","🕗","🕘","🕙","🕚"];
-            $f = $frames[$w % count($frames)];
-            $w++;
-            echo "\rIn attesa degli altri giocatori per round {$nextRound} $f ({$roundReadyCount}/4) ";
-        } elseif (!isset($payload) && $role === 'player') {
-            showStatusAnimation('lobby', $lobbyPlayers, $lobbyNeeded);
-        } elseif (isset($payload) && $role === 'player' && $payload['turn'] !== $playerId - 1 && !$waitingNext) {
-            showTurnAnimation($payload['turn']);
-            $line = fgets(STDIN);
-            if ($line !== false) {
-                echo "\nInput ignorato (non è il tuo turno)\n";
-                flushStdin();
-            }
-        }
-        usleep(200000);
     }
 }

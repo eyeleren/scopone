@@ -57,14 +57,27 @@ while (!feof($socket)) {
             if ($msg['type'] === 'capture') {
                 $pindex = $msg['player'];
                 $pname = $s['players'][$pindex]['name'] ?? ("Player".($pindex+1));
-                echo "\nEvento: {$pname} ha catturato: ";
-                foreach ($msg['cards'] as $c) echo "[{$c['label']} {$c['suit']}] ";
-                echo "\n";
+
+                // NEW: prefer 'taken' + 'card' (played) fields; fallback to old 'cards'
+                $taken = (isset($msg['taken']) && is_array($msg['taken'])) ? $msg['taken'] : null;
+                $played = (isset($msg['card']) && is_array($msg['card'])) ? $msg['card'] : null;
+
+                if ($taken !== null && $played !== null) {
+                    echo "\n[CAPTURE] {$pname} prende ";
+                    foreach ($taken as $c) echo "[{$c['label']} {$c['suit']}] ";
+                    echo "con [{$played['label']} {$played['suit']}]\n";
+                } else {
+                    // fallback: old payload 'cards' = played + taken
+                    echo "\nEvento: {$pname} ha catturato: ";
+                    foreach (($msg['cards'] ?? []) as $c) echo "[{$c['label']} {$c['suit']}] ";
+                    echo "\n";
+                }
+
             } elseif ($msg['type'] === 'place') {
                 $c = $msg['card'];
                 $pindex = $msg['player'];
                 $pname = $s['players'][$pindex]['name'] ?? ("Player".($pindex+1));
-                echo "\nEvento: {$pname} ha messo {$c['label']} {$c['suit']}\n";
+                echo "\n[PLAY] {$pname} mette {$c['label']} {$c['suit']}\n";
             }
             break;
 

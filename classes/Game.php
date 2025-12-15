@@ -100,7 +100,15 @@ class Game {
         if ($card->value === 1 && empty($this->table)) {
             $player->addCaptured([$card]);
             $events = [
-                ['type'=>'capture','player'=>$i,'cards'=>[$card->toArray()]]
+                [
+                    'type'  => 'capture',
+                    'player'=> $i,
+                    // NEW: explicit fields so client/server can render "prende X con Y"
+                    'card'  => $card->toArray(),
+                    'taken' => [$card->toArray()],
+                    // keep for backward compatibility (captured = played + taken)
+                    'cards' => [$card->toArray()],
+                ]
             ];
             $this->advanceTurn();
             $this->movesInRound++;
@@ -117,16 +125,28 @@ class Game {
                     if ($tabc === $t) { array_splice($this->table, $k, 1); break; }
                 }
             }
+
             $captured = array_merge([$card], $taken);
             $player->addCaptured($captured);
-            $events[] = ['type'=>'capture','player'=>$i,'cards'=>array_map(fn($c)=>$c->toArray(), $captured)];
+
+            // NEW: send played card + taken cards separately
+            $events[] = [
+                'type'   => 'capture',
+                'player' => $i,
+                'card'   => $card->toArray(),
+                'taken'  => array_map(fn($c)=>$c->toArray(), $taken),
+                // keep for backward compatibility (captured = played + taken)
+                'cards'  => array_map(fn($c)=>$c->toArray(), $captured),
+            ];
+
             // annunci speciali
             foreach ($captured as $c) {
                 if ($c->suit === 'Denari' && $c->value === 7) $events[] = ['type'=>'SETTEBELLO','player'=>$i];
                 if ($c->suit === 'Denari' && $c->value === 10) $events[] = ['type'=>'REBELLO','player'=>$i];
             }
             // SCOPA: tavolo svuotato e c'erano carte prima
-            if (count($this->table) === 0 && $hadCardsBefore > 0) {
+            // FIX: per regola di questa versione, SCOPA non può avvenire con Asso
+            if ($card->value !== 1 && count($this->table) === 0 && $hadCardsBefore > 0) {
                 $player->addScopa();
                 $events[] = ['type'=>'SCOPA','player'=>$i];
             }

@@ -155,27 +155,56 @@ while (true) {
             }
 
             if (!empty($result['events'])) {
+
+                // 👇 NEW: collect announce labels for this move (to append to the main log line)
+                $moveBonuses = [];
+                foreach ($result['events'] as $ev0) {
+                    if (!in_array($ev0['type'], ['SETTEBELLO','REBELLO','SCOPA'], true)) continue;
+                    $moveBonuses[] = match($ev0['type']) {
+                        'SETTEBELLO' => '⚜️ SETTEBELLO',
+                        'REBELLO'    => '👑 RE BELLO',
+                        'SCOPA'      => '🧹 SCOPA',
+                        default      => $ev0['type']
+                    };
+                }
+                $bonusSuffix = empty($moveBonuses) ? '' : (' | ' . implode(' | ', $moveBonuses));
+                $bonusApplied = false;
+
                 foreach ($result['events'] as $ev) {
                     if ($ev['type'] === 'capture' || $ev['type'] === 'place') {
                         $out = json_encode([
                             'action' => 'event',
                             'type'   => $ev['type'],
                             'player' => $ev['player'],
-                            'cards'  => $ev['cards'] ?? null,
+                            // NEW: explicit capture payload
+                            'taken'  => $ev['taken'] ?? null,
+                            'cards'  => $ev['cards'] ?? null, // keep compat
                             'card'   => $ev['card'] ?? null
                         ]);
                         foreach ($clients as $c) @fwrite($c, $out . "\n");
 
-                        // 👇 Server-side verbose log with emojis
+                        $suffix = (!$bonusApplied ? $bonusSuffix : '');
+
                         if ($ev['type'] === 'capture') {
-                            $cardsStr = implode(' ', array_map('emojiCard', $ev['cards']));
                             $pname = $game->players[$ev['player']]->name;
-                            echo "[CAPTURE] {$pname} prende: $cardsStr\n";
+
+                            $takenArr = $ev['taken'] ?? [];
+                            $takenStr = implode(' ', array_map('emojiCard', $takenArr));
+
+                            $playedCard = $ev['card'] ?? null;
+                            $playedStr = is_array($playedCard) ? emojiCard($playedCard) : '??';
+
+                            // REQUIRED FORMAT:
+                            echo "[CAPTURE] {$pname} prende {$takenStr} con {$playedStr}{$suffix}\n";
                         } else {
                             $pname = $game->players[$ev['player']]->name;
-                            echo "[PLAY] {$pname} mette " . emojiCard($ev['card']) . "\n";
+                            echo "[PLAY] {$pname} mette " . emojiCard($ev['card']) . "{$suffix}\n";
                         }
+
+                        $bonusApplied = true;
+
                     } elseif (in_array($ev['type'], ['SETTEBELLO','REBELLO','SCOPA'], true)) {
+                        // keep announce only for server (unchanged)
                         $out = json_encode([
                             'action'=>'announce',
                             'type'=>$ev['type'],
@@ -184,7 +213,7 @@ while (true) {
                         ]);
                         foreach ($clients as $c) @fwrite($c, $out."\n");
 
-                        // 👇 Server announce log
+                        // (optional) keep announce log too
                         $label = match($ev['type']) {
                             'SETTEBELLO' => '⚜️ SETTEBELLO',
                             'REBELLO'    => '👑 RE BELLO',
