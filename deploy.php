@@ -18,7 +18,7 @@ $host = getenv('SCOPONE_DEPLOY_HOST') ?: '';
 
 host('EC2', $host)
     ->user('jakala')
-    ->set('deploy_path', '/var/www/scopone')
+    ->set('deploy_path', '/var/www/html')
     ->set('ssh_multiplexing', true)
     ->set('allow_sudo', true);
 
