@@ -17,11 +17,11 @@ set('writable_dirs', []);
 
 set('keep_releases', 3);
 
+
 $host = getenv('SCOPONE_DEPLOY_HOST') ?: '';
 
-host('EC2')
-    ->setHostname($host)
-    ->setRemoteUser('jakala')
+host('EC2', $host)
+    ->user('jakala')
     ->setDeployPath('/var/www/scopone');
 
 // Custom deploy task (minimal)
