@@ -263,6 +263,12 @@ while (true) {
                     echo "\n🧹  SCOPA di {$pname}! 🧹\n";
                 }
                 break;
+
+            case 'game_over':
+                system('clear');
+                $txt = $msg['msg'] ?? 'FINE';
+                echo "\n*** {$txt} ***\n";
+                exit(0);
         }
     }
 }

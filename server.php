@@ -47,6 +47,10 @@ $lastLobbyBroadcast = time();
 $clientMeta = []; // mappa socket->endpoint
 $socketPlayerIndex = []; // mappa (int)socket -> indice player (0..3)
 
+// NEW: maps to detect who disconnected
+$socketRole = [];     // (int)socket -> 'player'|'spectator'
+$socketPlayerId = []; // (int)socket -> 1-based id assigned at welcome
+
 // Handshake nuovo round
 $pendingNextRound = false;
 $nextRoundNumber = null;
@@ -62,6 +66,7 @@ while (true) {
     if (in_array($server, $read)) {
         $conn = stream_socket_accept($server);
         if (!$conn) continue;
+
         stream_set_blocking($conn, false);
         stream_set_write_buffer($conn, 0);
         $meta = stream_socket_get_name($conn, true);
@@ -71,9 +76,13 @@ while (true) {
 
         $role = $playerCount <= 4 ? 'player' : 'spectator';
         $id = $playerCount;
+
+        // NEW: keep socket identity
+        $socketRole[(int)$conn] = $role;
+        $socketPlayerId[(int)$conn] = $id;
+
         $game->registerPlayer($id, "Player$id", $role);
         if ($role === 'player') {
-            // indice reale del player appena aggiunto
             $socketPlayerIndex[(int)$conn] = count($game->players) - 1;
         }
 
@@ -121,15 +130,50 @@ while (true) {
     // Read player input (only from ready sockets, non-blocking)
     foreach ($read as $client) {
         if ($client === $server) continue;
+
         $data = fgets($client);
         if ($data === false) {
             if (feof($client)) {
-                // remove disconnected client
+                $sockId = (int)$client;
+
+                // NEW: if a PLAYER disconnects -> end game for everyone
+                $role = $socketRole[$sockId] ?? null;
+                if ($role === 'player') {
+                    $meta = $clientMeta[$sockId] ?? 'unknown';
+                    $pIdx = $socketPlayerIndex[$sockId] ?? null;
+
+                    $pname = 'Player?';
+                    if ($pIdx !== null && isset($game->players[$pIdx])) {
+                        $pname = $game->players[$pIdx]->name;
+                    } elseif (isset($socketPlayerId[$sockId])) {
+                        $pname = "Player" . $socketPlayerId[$sockId];
+                    }
+
+                    $why = $game->started ? 'Partita terminata' : 'Lobby annullata';
+                    echo "[DISCONNECT] {$pname} left ({$meta}) -> {$why}.\n";
+
+                    $out = json_encode([
+                        'action' => 'game_over',
+                        'msg'    => "{$why}: {$pname} si è disconnesso."
+                    ]);
+
+                    foreach ($clients as $c) { @fwrite($c, $out . "\n"); }
+
+                    // Close all sockets and exit server
+                    foreach ($clients as $c) { @fclose($c); }
+                    @fclose($server);
+                    exit(0);
+                }
+
+                // existing: remove disconnected client (spectator or unknown)
                 $idx = array_search($client, $clients, true);
                 if ($idx !== false) {
                     fclose($client);
                     array_splice($clients, $idx, 1);
                 }
+
+                // NEW: cleanup maps
+                unset($clientMeta[$sockId], $socketPlayerIndex[$sockId], $socketRole[$sockId], $socketPlayerId[$sockId]);
             }
             continue;
         }
