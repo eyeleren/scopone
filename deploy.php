@@ -17,10 +17,8 @@ set('writable_dirs', []);
 
 set('keep_releases', 3);
 
-$host = getenv('SCOPONE_DEPLOY_HOST') ?: '';
-
 host('EC2')
-    ->setHostname($host)
+    ->setHostname('87.0.230.67')
     ->setRemoteUser('jakala')
     ->setDeployPath('/var/www/scopone');
 
