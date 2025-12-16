@@ -3,101 +3,197 @@
 // Usage: php spectator.php <SERVER_IP> <PORT>
 // ex: php spectator.php 192.168.1.42 9000
 
-if ($argc < 3) {
-    echo "Uso: php spectator.php <SERVER_IP> <PORT>\n";
-    exit(1);
-}
-
-$server = $argv[1];
-$port = intval($argv[2]);
+$server = $argv[1] ?? '127.0.0.1';
+$port   = isset($argv[2]) ? intval($argv[2]) : 9000;
 
 $socket = @stream_socket_client("tcp://{$server}:{$port}", $errno, $errstr, 5);
 if (!$socket) {
     echo "Connessione fallita: $errstr ($errno)\n";
     exit(1);
 }
+
 stream_set_blocking($socket, true);
 stream_set_blocking(STDIN, true);
 
-// send join as spectator (nick optional)
-fwrite($socket, json_encode(['action'=>'join','nick'=>'Spectator','mode'=>'spectator']) . "\n");
-$ack = trim(fgets($socket));
+function emojiCard(array $c): string {
+    if (isset($c['hidden'])) return '🂠';
+    $suitMap = [
+        'Spade'   => '⚔️',
+        'Denari'  => '💰',
+        'Coppe'   => '🍷',
+        'Bastoni' => '🪵',
+    ];
+    $rankEmoji = match($c['value'] ?? null) {
+        1 => 'A',
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '🧙',
+        9 => '🐴',
+        10 => '👑',
+        default => '?'
+    };
+    $suitEmoji = $suitMap[$c['suit'] ?? ''] ?? '?';
 
-echo "\033[1;37mSCOPONE SCIENTIFICO — Spectator connected\033[0m\n\n";
+    if (($c['suit'] ?? '') === 'Denari' && in_array(($c['value'] ?? 0), [7, 10], true)) {
+        return "⭐{$rankEmoji}{$suitEmoji}";
+    }
+    return "{$rankEmoji}{$suitEmoji}";
+}
+
+// NEW: join FIRST (server replies welcome after deciding role)
+@fwrite($socket, json_encode([
+    'action' => 'join',
+    'nick'   => 'Spectator',
+    'mode'   => 'spectator'
+]) . "\n");
+
+$line = fgets($socket);
+if ($line === false) {
+    echo "Nessun messaggio di welcome dal server.\n";
+    exit(1);
+}
+$welcome = json_decode(trim($line), true);
+if (!is_array($welcome) || ($welcome['action'] ?? '') !== 'welcome') {
+    echo "Welcome non valido: {$line}\n";
+    exit(1);
+}
+
+$role = $welcome['payload']['role'] ?? 'spectator';
+echo "\033[1;37mSCOPONE SCIENTIFICO — Connected as {$role}\033[0m\n\n";
+
+$s = null;
+$lastMoveText = '(nessuna)';
+$lastMovePlayerIndex = null;
+
+$lobbyPlayers = 0;
+$lobbyNeeded  = 4;
+
+$waitingNext = false;
+$nextRound = null;
+$roundReady = 0;
+$roundTotal = 4;
 
 while (!feof($socket)) {
-    $line = trim(fgets($socket));
-    if ($line === '') continue;
-    $msg = json_decode($line, true);
+    $raw = fgets($socket);
+
+    // NEW: if server disconnects, exit spectator too
+    if ($raw === false) {
+        if (feof($socket)) break;
+        continue;
+    }
+
+    $raw = trim($raw);
+    if ($raw === '') continue;
+
+    $msg = json_decode($raw, true);
     if (!is_array($msg)) continue;
 
     switch ($msg['action'] ?? '') {
+        case 'error':
+            echo "\n[ERROR] " . ($msg['msg'] ?? 'Errore') . "\n";
+            break;
+
+        case 'lobby':
+            $lobbyPlayers = (int)($msg['players'] ?? 0);
+            $lobbyNeeded  = (int)($msg['needed'] ?? 4);
+            echo "\rIn attesa giocatori ({$lobbyPlayers}/{$lobbyNeeded}) ";
+            break;
+
         case 'state':
-            $s = $msg['payload'];
+            $s = $msg['payload'] ?? null;
+            if (!is_array($s)) break;
+
+            // NEW: if the next round has started, stop showing the WAIT line
+            if ($waitingNext && $nextRound !== null) {
+                $currentRound = (int)($s['round'] ?? 0);
+                if ($currentRound >= (int)$nextRound) {
+                    $waitingNext = false;
+                    $nextRound = null;
+                    $roundReady = 0;
+                    $roundTotal = 4;
+                }
+            }
+
             echo "\033[2J\033[;H";
             echo "\033[1;36mSCOPONE SCIENTIFICO — ROUND {$s['round']} (SPECTATOR)\033[0m\n";
-            echo "Turno giocatore ".($s['turn']+1)." 🕒\n";
-            echo "Tavolo: ";
-            if (empty($s['table'])) echo "(vuoto)\n"; else {
-                foreach ($s['table'] as $c) echo "[{$c['label']} {$c['suit']}]  ";
-                echo "\n";
+            echo "Turno: " . (($s['players'][$s['turn']]['name'] ?? ('Player'.($s['turn']+1)))) . "\n";
+            echo "Team Scores: A {$s['teamScores']['A']}  |  B {$s['teamScores']['B']}\n\n";
+
+            echo "Tavolo: " . (empty($s['table']) ? '(vuoto)' : implode(' ', array_map('emojiCard', $s['table']))) . "\n";
+            echo "Ultima mossa: {$lastMoveText}\n";
+
+            if ($waitingNext && $nextRound !== null) {
+                echo "\n\033[1;33m[WAIT] Prossimo round {$nextRound}: pronti {$roundReady}/{$roundTotal}\033[0m\n";
             }
+
             echo "\n--- MANI (FULL VIEW) ---\n";
-            foreach ($s['players'] as $i => $p) {
+            foreach (($s['players'] ?? []) as $i => $p) {
+                $hand = $p['hand'] ?? [];
                 echo ($i+1) . ") {$p['name']} | captures: {$p['capturesCount']} | hand: ";
-                foreach ($p['hand'] as $ci => $card) {
-                    echo "[{$card['label']} {$card['suit']}] ";
-                }
+                echo empty($hand) ? "(vuota)" : implode(' ', array_map('emojiCard', $hand));
                 echo "\n";
             }
-            echo "\nTeam Scores: A {$s['teamScores']['A']}  |  B {$s['teamScores']['B']}\n";
             break;
 
         case 'event':
-            if ($msg['type'] === 'capture') {
-                $pindex = $msg['player'];
+            $type = $msg['type'] ?? '';
+            if ($type === 'capture') {
+                $pindex = (int)($msg['player'] ?? -1);
                 $pname = $s['players'][$pindex]['name'] ?? ("Player".($pindex+1));
 
-                // NEW: prefer 'taken' + 'card' (played) fields; fallback to old 'cards'
-                $taken = (isset($msg['taken']) && is_array($msg['taken'])) ? $msg['taken'] : null;
+                $taken = (isset($msg['taken']) && is_array($msg['taken'])) ? $msg['taken'] : ($msg['cards'] ?? []);
                 $played = (isset($msg['card']) && is_array($msg['card'])) ? $msg['card'] : null;
 
-                if ($taken !== null && $played !== null) {
-                    echo "\n[CAPTURE] {$pname} prende ";
-                    foreach ($taken as $c) echo "[{$c['label']} {$c['suit']}] ";
-                    echo "con [{$played['label']} {$played['suit']}]\n";
-                } else {
-                    // fallback: old payload 'cards' = played + taken
-                    echo "\nEvento: {$pname} ha catturato: ";
-                    foreach (($msg['cards'] ?? []) as $c) echo "[{$c['label']} {$c['suit']}] ";
-                    echo "\n";
-                }
+                $takenStr = is_array($taken) ? implode(' ', array_map('emojiCard', $taken)) : '';
+                $playedStr = is_array($played) ? emojiCard($played) : '??';
 
-            } elseif ($msg['type'] === 'place') {
-                $c = $msg['card'];
-                $pindex = $msg['player'];
+                $lastMovePlayerIndex = $pindex;
+                $lastMoveText = "[CAPTURE] {$pname} prende {$takenStr} con {$playedStr}";
+                echo "\n{$lastMoveText}\n";
+
+            } elseif ($type === 'place') {
+                $pindex = (int)($msg['player'] ?? -1);
                 $pname = $s['players'][$pindex]['name'] ?? ("Player".($pindex+1));
-                echo "\n[PLAY] {$pname} mette {$c['label']} {$c['suit']}\n";
+                $c = $msg['card'] ?? null;
+
+                $lastMovePlayerIndex = $pindex;
+                $lastMoveText = "[PLAY] {$pname} mette " . (is_array($c) ? emojiCard($c) : '??');
+                echo "\n{$lastMoveText}\n";
             }
             break;
 
         case 'announce':
-            if ($msg['type'] === 'SETTEBELLO') {
-                for ($i=0;$i<3;$i++) {
-                    echo "\033[1;41m" . str_pad("  ⚜️  SETTEBELLO!  ⚜️  {$msg['who']}  ", 60, " ", STR_PAD_BOTH) . "\033[0m\n";
-                    usleep(160000); echo "\n"; usleep(120000);
-                }
-            } elseif ($msg['type'] === 'REBELLO') {
-                for ($i=0;$i<3;$i++) {
-                    echo "\033[1;41m" . str_pad("  👑  RE BELLO!  👑  {$msg['who']}  ", 60, " ", STR_PAD_BOTH) . "\033[0m\n";
-                    usleep(160000); echo "\n"; usleep(120000);
-                }
-            } elseif ($msg['type'] === 'SCOPA') {
-                for ($i=0;$i<2;$i++) {
-                    echo "\033[1;43m" . str_pad("  🧹  SCOPA!  {$msg['who']}  ", 60, " ", STR_PAD_BOTH) . "\033[0m\n";
-                    usleep(160000); echo "\n"; usleep(120000);
-                }
+            $pindex = (int)($msg['player'] ?? -1);
+            $label = match($msg['type'] ?? '') {
+                'SETTEBELLO' => '⚜️ SETTEBELLO',
+                'REBELLO'    => '👑 RE BELLO',
+                'SCOPA'      => '🧹 SCOPA',
+                default      => (string)($msg['type'] ?? 'ANNOUNCE')
+            };
+
+            if ($lastMovePlayerIndex === $pindex) {
+                $lastMoveText .= " | {$label}";
             }
+            break;
+
+        case 'round_prepare':
+            $waitingNext = true;
+            $nextRound = (int)($msg['nextRound'] ?? 0);
+            $roundReady = 0;
+            $roundTotal = (int)($msg['needed'] ?? 4);
+            echo "\n\033[1;33m[WAIT] In attesa conferme per round {$nextRound} (0/{$roundTotal})\033[0m\n";
+            break;
+
+        case 'round_progress':
+            $waitingNext = true;
+            $nextRound = (int)($msg['nextRound'] ?? $nextRound);
+            $roundReady = (int)($msg['ready'] ?? $roundReady);
+            $roundTotal = (int)($msg['total'] ?? $roundTotal);
+            echo "\r\033[1;33m[WAIT] Round {$nextRound}: pronti {$roundReady}/{$roundTotal}\033[0m   ";
             break;
 
         case 'round_summary':
@@ -105,8 +201,15 @@ while (!feof($socket)) {
             echo "Coppia A (" . implode(' + ', $msg['coppiaA']['players']) . "): +{$msg['coppiaA']['points']}  (Tot {$msg['coppiaA']['total']})\n";
             echo "Coppia B (" . implode(' + ', $msg['coppiaB']['players']) . "): +{$msg['coppiaB']['points']}  (Tot {$msg['coppiaB']['total']})\n";
             echo "Dettagli:\n";
-            foreach ($msg['notes'] as $n) echo "  - {$n}\n";
+            foreach (($msg['notes'] ?? []) as $n) echo "  - {$n}\n";
             echo "────────────────────────────────────────\n";
+
+            // NEW: if final, don't wait for ENTER (game_over is coming)
+            if (!empty($msg['final'])) {
+                echo "(Fine partita in arrivo...)\n";
+                break;
+            }
+
             echo "Premi INVIO per continuare...";
             fgets(STDIN);
             break;
@@ -120,4 +223,6 @@ while (!feof($socket)) {
     }
 }
 
+echo "\n[DISCONNECT] Server disconnected. Closing spectator.\n";
 fclose($socket);
+exit(0);

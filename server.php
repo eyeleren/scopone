@@ -2,7 +2,7 @@
 
 require_once __DIR__ . '/classes/Game.php';
 
-$port = $argv[1] ?? 12345;
+$port = $argv[1] ?? 9000;
 $address = '0.0.0.0';
 
 $server = stream_socket_server("tcp://$address:$port", $errno, $errstr);
@@ -41,20 +41,30 @@ function emojiCard(array $c): string {
 }
 
 $clients = [];
-$playerCount = 0;
 $game = new Game();
 $lastLobbyBroadcast = time();
-$clientMeta = []; // mappa socket->endpoint
-$socketPlayerIndex = []; // mappa (int)socket -> indice player (0..3)
+$clientMeta = []; // socketId -> endpoint
+$socketPlayerIndex = []; // socketId -> player index (0..3)
 
-// NEW: maps to detect who disconnected
-$socketRole = [];     // (int)socket -> 'player'|'spectator'
-$socketPlayerId = []; // (int)socket -> 1-based id assigned at welcome
+// NEW: identity maps
+$socketRole = [];     // socketId -> 'player'|'spectator'|'pending'
+$socketPlayerId = []; // socketId -> 1-based playerId (only for players)
+$nextSpectatorId = 1; // for welcome payload only
 
 // Handshake nuovo round
 $pendingNextRound = false;
 $nextRoundNumber = null;
 $roundReady = [];
+
+// helper: broadcast lobby (players only)
+function broadcastLobby(array $clients, Game $game): void {
+    $lobbyMsg = json_encode([
+        'action'=>'lobby',
+        'players'=>count($game->players),
+        'needed'=>4
+    ]);
+    foreach ($clients as $c) { @fwrite($c, $lobbyMsg."\n"); }
+}
 
 while (true) {
     $read = $clients;
@@ -62,72 +72,35 @@ while (true) {
 
     stream_select($read, $write, $except, 0, 200000);
 
-    // Accept new connections
-    if (in_array($server, $read)) {
+    // Accept new connections (NO automatic role assignment here)
+    if (in_array($server, $read, true)) {
         $conn = stream_socket_accept($server);
         if (!$conn) continue;
 
         stream_set_blocking($conn, false);
         stream_set_write_buffer($conn, 0);
+
         $meta = stream_socket_get_name($conn, true);
         $clients[] = $conn;
-        $playerCount++;
-        $clientMeta[(int)$conn] = $meta;
 
-        $role = $playerCount <= 4 ? 'player' : 'spectator';
-        $id = $playerCount;
+        $sockId = (int)$conn;
+        $clientMeta[$sockId] = $meta;
 
-        // NEW: keep socket identity
-        $socketRole[(int)$conn] = $role;
-        $socketPlayerId[(int)$conn] = $id;
+        // pending until we receive {"action":"join", ...}
+        $socketRole[$sockId] = 'pending';
+        $socketPlayerId[$sockId] = null;
 
-        $game->registerPlayer($id, "Player$id", $role);
-        if ($role === 'player') {
-            $socketPlayerIndex[(int)$conn] = count($game->players) - 1;
-        }
-
-        fwrite($conn, json_encode([
-            'action' => 'welcome',
-            'payload' => [
-                'id' => $id,
-                'role' => $role,
-                'players' => count($game->players),
-                'needed'  => 4
-            ]
-        ]) . "\n");
-
-        $lobbyMsg = json_encode([
-            'action'=>'lobby',
-            'players'=>count($game->players),
-            'needed'=>4
-        ]);
-        foreach ($clients as $c) { @fwrite($c, $lobbyMsg."\n"); }
-
-        // Log immediato solo per spettatori; per i player aspettiamo il nome reale
-        if ($role === 'spectator') {
-            echo "New spectator connected ($meta)\n";
-        }
-        // RIMOSSO avvio immediato: aspettiamo conferma nomi
-        // if ($game->isReady()) {
-        //     $game->startRound();
-        //     $game->broadcastState($clients);
-        // }
+        // no lobby broadcast yet; wait for join (player/spectator)
     }
 
     // Periodic lobby updates until game start
     if (!$game->isReady()) {
         if (time() - $lastLobbyBroadcast >= 1) {
             $lastLobbyBroadcast = time();
-            $lobbyMsg = json_encode([
-                'action'=>'lobby',
-                'players'=>count($game->players),
-                'needed'=>4
-            ]);
-            foreach ($clients as $c) { @fwrite($c, $lobbyMsg."\n"); }
+            broadcastLobby($clients, $game);
         }
     }
 
-    // Read player input (only from ready sockets, non-blocking)
     foreach ($read as $client) {
         if ($client === $server) continue;
 
@@ -136,7 +109,7 @@ while (true) {
             if (feof($client)) {
                 $sockId = (int)$client;
 
-                // NEW: if a PLAYER disconnects -> end game for everyone
+                // If a PLAYER disconnects -> end for everyone (spectator leaving does NOT end)
                 $role = $socketRole[$sockId] ?? null;
                 if ($role === 'player') {
                     $meta = $clientMeta[$sockId] ?? 'unknown';
@@ -145,7 +118,7 @@ while (true) {
                     $pname = 'Player?';
                     if ($pIdx !== null && isset($game->players[$pIdx])) {
                         $pname = $game->players[$pIdx]->name;
-                    } elseif (isset($socketPlayerId[$sockId])) {
+                    } elseif (!empty($socketPlayerId[$sockId])) {
                         $pname = "Player" . $socketPlayerId[$sockId];
                     }
 
@@ -153,34 +126,152 @@ while (true) {
                     echo "[DISCONNECT] {$pname} left ({$meta}) -> {$why}.\n";
 
                     $out = json_encode([
-                        'action' => 'game_over',
-                        'msg'    => "{$why}: {$pname} si è disconnesso."
+                        'action'     => 'game_over',
+                        'msg'        => "{$why}: {$pname} si è disconnesso.",
+                        'winner'     => null,
+                        'teamScores' => $game->teamScores
                     ]);
 
                     foreach ($clients as $c) { @fwrite($c, $out . "\n"); }
 
-                    // Close all sockets and exit server
                     foreach ($clients as $c) { @fclose($c); }
                     @fclose($server);
                     exit(0);
                 }
 
-                // existing: remove disconnected client (spectator or unknown)
+                // spectator/pending disconnect: just remove
                 $idx = array_search($client, $clients, true);
                 if ($idx !== false) {
                     fclose($client);
                     array_splice($clients, $idx, 1);
                 }
 
-                // NEW: cleanup maps
-                unset($clientMeta[$sockId], $socketPlayerIndex[$sockId], $socketRole[$sockId], $socketPlayerId[$sockId]);
+                unset(
+                    $clientMeta[$sockId],
+                    $socketPlayerIndex[$sockId],
+                    $socketRole[$sockId],
+                    $socketPlayerId[$sockId]
+                );
             }
             continue;
         }
-        $msg = json_decode(trim($data), true);
-        if (!$msg) continue;
 
-        if ($msg['action'] === 'play') {
+        $msg = json_decode(trim($data), true);
+        if (!is_array($msg)) continue;
+
+        $sockId = (int)$client;
+        $role = $socketRole[$sockId] ?? 'pending';
+
+        // --- JOIN MUST BE FIRST ---
+        if (($msg['action'] ?? '') !== 'join' && $role === 'pending') {
+            @fwrite($client, json_encode([
+                'action' => 'error',
+                'msg'    => 'Devi inviare join prima di qualsiasi altra azione.'
+            ]) . "\n");
+            continue;
+        }
+
+        if (($msg['action'] ?? '') === 'join') {
+            $mode = $msg['mode'] ?? 'player';
+            $nick = trim((string)($msg['nick'] ?? ''));
+
+            // prevent double-join
+            if ($role !== 'pending') {
+                @fwrite($client, json_encode([
+                    'action' => 'error',
+                    'msg'    => 'Sei già registrato.'
+                ]) . "\n");
+                continue;
+            }
+
+            // Decide final role based on requested mode + slots available
+            if ($mode === 'player' && count($game->players) < 4) {
+                // Validate name; fallback to PlayerN if invalid/duplicate
+                if ($nick === '' || mb_strlen($nick) > 20 || $game->isNameTaken($nick)) {
+                    $base = 'Player' . (count($game->players) + 1);
+                    $candidate = $base;
+                    $k = 2;
+                    while ($game->isNameTaken($candidate)) {
+                        $candidate = $base . $k;
+                        $k++;
+                    }
+                    $nick = $candidate;
+                }
+
+                $playerId = count($game->players) + 1;
+
+                $socketRole[$sockId] = 'player';
+                $socketPlayerId[$sockId] = $playerId;
+
+                $game->registerPlayer($playerId, $nick, 'player');
+                $socketPlayerIndex[$sockId] = count($game->players) - 1;
+
+                @fwrite($client, json_encode([
+                    'action' => 'welcome',
+                    'payload' => [
+                        'id'      => $playerId,
+                        'role'    => 'player',
+                        'name'    => $nick,
+                        'players' => count($game->players),
+                        'needed'  => 4
+                    ]
+                ]) . "\n");
+
+                $metaStr = $clientMeta[$sockId] ?? 'unknown';
+                echo "New player connected ($metaStr) as {$nick}\n";
+
+                broadcastLobby($clients, $game);
+
+                if ($game->isReady() && !$game->started) {
+                    $game->startRound();
+
+                    // NEW: server-side game start message
+                    $a1 = $game->players[0]->name ?? 'Player1';
+                    $b1 = $game->players[1]->name ?? 'Player2';
+                    $a2 = $game->players[2]->name ?? 'Player3';
+                    $b2 = $game->players[3]->name ?? 'Player4';
+                    echo "[START] Partita iniziata! Round {$game->round}\n";
+                    echo "        Coppia A: {$a1} + {$a2}\n";
+                    echo "        Coppia B: {$b1} + {$b2}\n";
+
+                    $game->broadcastState($clients);
+                }
+
+            } else {
+                // spectator (either requested, or player slots full)
+                $socketRole[$sockId] = 'spectator';
+                $socketPlayerId[$sockId] = null;
+
+                $sid = $nextSpectatorId++;
+                @fwrite($client, json_encode([
+                    'action' => 'welcome',
+                    'payload' => [
+                        'id'      => $sid,
+                        'role'    => 'spectator',
+                        'name'    => ($nick !== '' ? $nick : 'Spectator'),
+                        'players' => count($game->players),
+                        'needed'  => 4
+                    ]
+                ]) . "\n");
+
+                $metaStr = $clientMeta[$sockId] ?? 'unknown';
+                echo "New spectator connected ($metaStr)\n";
+
+                // send current lobby snapshot so spectator sees it immediately
+                broadcastLobby([$client], $game);
+
+                // if game already started, push a state snapshot right away
+                if ($game->started) {
+                    $state = $game->buildState(null, false);
+                    @fwrite($client, json_encode(['action'=>'state','payload'=>$state]) . "\n");
+                }
+            }
+
+            continue;
+        }
+
+        // --- Existing actions (unchanged) ---
+        if (($msg['action'] ?? '') === 'play') {
             $result = $game->handlePlay($msg['payload']['playerId'], $msg['payload']['cardIndex']);
 
             if (empty($result['ok'])) {
@@ -199,8 +290,6 @@ while (true) {
             }
 
             if (!empty($result['events'])) {
-
-                // 👇 NEW: collect announce labels for this move (to append to the main log line)
                 $moveBonuses = [];
                 foreach ($result['events'] as $ev0) {
                     if (!in_array($ev0['type'], ['SETTEBELLO','REBELLO','SCOPA'], true)) continue;
@@ -220,9 +309,8 @@ while (true) {
                             'action' => 'event',
                             'type'   => $ev['type'],
                             'player' => $ev['player'],
-                            // NEW: explicit capture payload
                             'taken'  => $ev['taken'] ?? null,
-                            'cards'  => $ev['cards'] ?? null, // keep compat
+                            'cards'  => $ev['cards'] ?? null,
                             'card'   => $ev['card'] ?? null
                         ]);
                         foreach ($clients as $c) @fwrite($c, $out . "\n");
@@ -238,7 +326,6 @@ while (true) {
                             $playedCard = $ev['card'] ?? null;
                             $playedStr = is_array($playedCard) ? emojiCard($playedCard) : '??';
 
-                            // REQUIRED FORMAT:
                             echo "[CAPTURE] {$pname} prende {$takenStr} con {$playedStr}{$suffix}\n";
                         } else {
                             $pname = $game->players[$ev['player']]->name;
@@ -248,7 +335,6 @@ while (true) {
                         $bonusApplied = true;
 
                     } elseif (in_array($ev['type'], ['SETTEBELLO','REBELLO','SCOPA'], true)) {
-                        // keep announce only for server (unchanged)
                         $out = json_encode([
                             'action'=>'announce',
                             'type'=>$ev['type'],
@@ -257,7 +343,6 @@ while (true) {
                         ]);
                         foreach ($clients as $c) @fwrite($c, $out."\n");
 
-                        // (optional) keep announce log too
                         $label = match($ev['type']) {
                             'SETTEBELLO' => '⚜️ SETTEBELLO',
                             'REBELLO'    => '👑 RE BELLO',
@@ -274,9 +359,13 @@ while (true) {
 
             if (!empty($result['roundEnd'])) {
                 $score = $game->scoreRound();
+                $winner = $game->checkWinner();
+
                 $summary = json_encode([
-                    'action'=>'round_summary',
-                    'round'=>$game->round,
+                    'action' => 'round_summary',
+                    'round'  => $game->round,
+                    'final'  => ($winner !== null),   // NEW
+                    'winner' => $winner,              // NEW: 'A'|'B'|null
                     'coppiaA'=>[
                         'players'=>[$game->players[0]->name,$game->players[2]->name],
                         'points'=>$score['roundPoints']['A'],
@@ -290,17 +379,23 @@ while (true) {
                     'notes'=>$score['notes']
                 ]);
                 foreach ($clients as $c) @fwrite($c, $summary."\n");
+
                 echo "[ROUND END] Round {$game->round} | A +{$score['roundPoints']['A']} (Tot {$score['teamScores']['A']}) "
                     . "| B +{$score['roundPoints']['B']} (Tot {$score['teamScores']['B']})\n";
                 foreach ($score['notes'] as $n) echo "  - $n\n";
 
-                $winner = $game->checkWinner();
                 if ($winner !== null) {
-                    $msgWin = json_encode(['action'=>'game_over','msg'=>"Vince la Coppia $winner"]);
+                    // CHANGED: include winner + final teamScores so clients don't rely on stale "state"
+                    $msgWin = json_encode([
+                        'action'     => 'game_over',
+                        'msg'        => "Vince la Coppia $winner",
+                        'winner'     => $winner,               // 'A' | 'B'
+                        'teamScores' => $game->teamScores      // FINAL totals (post scoreRound)
+                    ]);
                     foreach ($clients as $c) @fwrite($c, $msgWin."\n");
+
                     echo "*** GAME OVER: Coppia {$winner} vince | Score finale A {$game->teamScores['A']} - B {$game->teamScores['B']} ***\n";
                 } else {
-                    // 👉 Avvia handshake per prossimo round
                     $pendingNextRound = true;
                     $nextRoundNumber = $game->round + 1;
                     $roundReady = [];
@@ -313,61 +408,13 @@ while (true) {
                     echo "[WAIT] In attesa che tutti i giocatori confermino per round $nextRoundNumber...\n";
                 }
             }
-        } elseif ($msg['action'] === 'join') {
-            $nick = trim($msg['nick'] ?? '');
-            $mode = $msg['mode'] ?? 'player';
-
-            if ($mode === 'player') {
-                $playerIdx = $socketPlayerIndex[(int)$client] ?? null;
-                if ($playerIdx === null) {
-                    @fwrite($client, json_encode([
-                        'action'=>'error',
-                        'playerId'=>$msg['id'] ?? null,
-                        'msg'=>'Sessione non valida'
-                    ]) . "\n");
-                    continue;
-                }
-                if ($nick === '' || mb_strlen($nick) > 20) {
-                    @fwrite($client, json_encode([
-                        'action'=>'error',
-                        'playerId'=>$playerIdx + 1,
-                        'msg'=>'Nome non valido'
-                    ]) . "\n");
-                } elseif (!$game->setPlayerName($playerIdx, $nick)) {
-                    @fwrite($client, json_encode([
-                        'action'=>'error',
-                        'playerId'=>$playerIdx + 1,
-                        'msg'=>'Nome già in uso'
-                    ]) . "\n");
-                } else {
-                    @fwrite($client, json_encode([
-                        'action'=>'name_ack',
-                        'name'=>$nick
-                    ]) . "\n");
-                    $metaStr = $clientMeta[(int)$client] ?? 'unknown';
-                    echo "New player connected ($metaStr) as {$nick}\n";
-
-                    $lobbyMsg = json_encode([
-                        'action'=>'lobby',
-                        'players'=>count($game->players),
-                        'needed'=>4
-                    ]);
-                    foreach ($clients as $c) { @fwrite($c, $lobbyMsg."\n"); }
-
-                    if ($game->isReady() && $game->allNamesConfirmed() && !$game->started) {
-                        $game->startRound();
-                        $game->broadcastState($clients);
-                    }
-                }
-            }
-        } elseif ($msg['action'] === 'round_ready') {
-            // Conferma giocatore per avvio prossimo round
+        } elseif (($msg['action'] ?? '') === 'round_ready') {
             if ($pendingNextRound && isset($msg['playerId'])) {
                 $pid = (int)$msg['playerId'];
                 if (($game->roles[$pid] ?? null) === 'player') {
                     $roundReady[$pid] = true;
                     $readyCount = count($roundReady);
-                    // Broadcast progresso
+
                     $prog = json_encode([
                         'action'=>'round_progress',
                         'nextRound'=>$nextRoundNumber,
@@ -375,9 +422,12 @@ while (true) {
                         'total'=>4
                     ]);
                     foreach ($clients as $c) @fwrite($c, $prog."\n");
-                    echo "[READY] Player{$pid} pronto ($readyCount/4) per round $nextRoundNumber\n";
+
+                    // NEW: print real player name instead of "Player{pid}"
+                    $pname = $game->players[$pid - 1]->name ?? ("Player{$pid}");
+                    echo "[READY] {$pname} pronto ({$readyCount}/4) per round {$nextRoundNumber}\n";
+
                     if ($readyCount === 4) {
-                        // Tutti pronti: avvia
                         $game->round++;
                         $game->startRound();
                         $pendingNextRound = false;

@@ -254,47 +254,47 @@ class Game {
         $notes = [];
 
         // CARTE
-        if ($detail['A']['cards'] > $detail['B']['cards']) { $roundPoints['A']++; $notes[]="Carte: +1 ad A"; }
-        elseif ($detail['B']['cards'] > $detail['A']['cards']) { $roundPoints['B']++; $notes[]="Carte: +1 a B"; }
-        else { $notes[]="Carte: parità, nessun punto"; }
+        if ($detail['A']['cards'] > $detail['B']['cards']) { $roundPoints['A']++; $notes[]="🃏 Carte: +1 ad A"; }
+        elseif ($detail['B']['cards'] > $detail['A']['cards']) { $roundPoints['B']++; $notes[]="🃏 Carte: +1 a B"; }
+        else { $notes[]="🃏 Carte: parità, nessun punto"; }
 
         // DENARI
-        if ($detail['A']['denari'] > $detail['B']['denari']) { $roundPoints['A']++; $notes[]="Denari: +1 ad A"; }
-        elseif ($detail['B']['denari'] > $detail['A']['denari']) { $roundPoints['B']++; $notes[]="Denari: +1 a B"; }
-        else { $notes[]="Denari: parità, nessun punto"; }
+        if ($detail['A']['denari'] > $detail['B']['denari']) { $roundPoints['A']++; $notes[]="💰 Denari: +1 ad A"; }
+        elseif ($detail['B']['denari'] > $detail['A']['denari']) { $roundPoints['B']++; $notes[]="💰 Denari: +1 a B"; }
+        else { $notes[]="💰 Denari: parità, nessun punto"; }
 
         // SETTEBELLO & RE BELLO
         $has7A = count(array_filter($tA, fn($c)=>$c->suit==='Denari' && $c->value===7))>0;
         $has7B = count(array_filter($tB, fn($c)=>$c->suit==='Denari' && $c->value===7))>0;
-        if ($has7A && !$has7B) { $roundPoints['A']++; $notes[]="Settebello: +1 ad A"; }
-        elseif ($has7B && !$has7A) { $roundPoints['B']++; $notes[]="Settebello: +1 a B"; }
-        else { $notes[]="Settebello: nessuno"; }
+        if ($has7A && !$has7B) { $roundPoints['A']++; $notes[]="⚜️ Settebello: +1 ad A"; }
+        elseif ($has7B && !$has7A) { $roundPoints['B']++; $notes[]="⚜️ Settebello: +1 a B"; }
+        else { $notes[]="⚜️ Settebello: nessuno"; }
 
         $hasReA = count(array_filter($tA, fn($c)=>$c->suit==='Denari' && $c->value===10))>0;
         $hasReB = count(array_filter($tB, fn($c)=>$c->suit==='Denari' && $c->value===10))>0;
-        if ($hasReA && !$hasReB) { $roundPoints['A']++; $notes[]="Re bello: +1 ad A"; }
-        elseif ($hasReB && !$hasReA) { $roundPoints['B']++; $notes[]="Re bello: +1 a B"; }
-        else { $notes[]="Re bello: nessuno"; }
+        if ($hasReA && !$hasReB) { $roundPoints['A']++; $notes[]="👑 Re bello: +1 ad A"; }
+        elseif ($hasReB && !$hasReA) { $roundPoints['B']++; $notes[]="👑 Re bello: +1 a B"; }
+        else { $notes[]="👑 Re bello: nessuno"; }
 
-        // PRIMIERA: compare only 7s; if tie compare 6s; if tie => patta (nessun punto)
+        // PRIMIERA
         $cnt7A = count(array_filter($tA, fn($c)=>$c->value===7));
         $cnt7B = count(array_filter($tB, fn($c)=>$c->value===7));
-        if ($cnt7A > $cnt7B) { $roundPoints['A']++; $notes[]="Primiera: +1 ad A (7)"; }
-        elseif ($cnt7B > $cnt7A) { $roundPoints['B']++; $notes[]="Primiera: +1 a B (7)"; }
+        if ($cnt7A > $cnt7B) { $roundPoints['A']++; $notes[]="🥇 Primiera: +1 ad A (Presi più 7 dell'altra squadra)"; }
+        elseif ($cnt7B > $cnt7A) { $roundPoints['B']++; $notes[]="🥇 Primiera: +1 a B (Presi più 7 dell'altra squadra)"; }
         else {
             $cnt6A = count(array_filter($tA, fn($c)=>$c->value===6));
             $cnt6B = count(array_filter($tB, fn($c)=>$c->value===6));
-            if ($cnt6A > $cnt6B) { $roundPoints['A']++; $notes[]="Primiera: +1 ad A (6)"; }
-            elseif ($cnt6B > $cnt6A) { $roundPoints['B']++; $notes[]="Primiera: +1 a B (6)"; }
-            else { $notes[]="Primiera: parità, nessun punto"; }
+            if ($cnt6A > $cnt6B) { $roundPoints['A']++; $notes[]="🥇 Primiera: +1 ad A (Presi più 6 dell'altra squadra)"; }
+            elseif ($cnt6B > $cnt6A) { $roundPoints['B']++; $notes[]="🥇 Primiera: +1 a B (Presi più 6 dell'altra squadra)"; }
+            else { $notes[]="🥇 Primiera: parità, nessun punto"; }
         }
 
         // NAPOLI
         $napA = $this->computeNapoli($tA);
         $napB = $this->computeNapoli($tB);
-        if ($napA > 0) { $roundPoints['A'] += $napA; $notes[]="Napoli: A riceve $napA punti"; }
-        if ($napB > 0) { $roundPoints['B'] += $napB; $notes[]="Napoli: B riceve $napB punti"; }
-        if ($napA===0 && $napB===0) $notes[]="Napoli: nessuna";
+        if ($napA > 0) { $roundPoints['A'] += $napA; $notes[]="🍕 Napoli: A riceve $napA punti"; }
+        if ($napB > 0) { $roundPoints['B'] += $napB; $notes[]="🍕 Napoli: B riceve $napB punti"; }
+        if ($napA===0 && $napB===0) $notes[]="🍕 Napoli: nessuna";
 
         // update totals
         $this->teamScores['A'] += $roundPoints['A'];
